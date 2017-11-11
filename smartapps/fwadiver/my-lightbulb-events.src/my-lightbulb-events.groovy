@@ -4,7 +4,7 @@
  *  Author: fwadiver
  */
 definition(
-    name: "My Light Bulb Events",
+    name: “My Light Bulb Events",
     namespace: "fwadiver",
     author: "fwadiver",
     description: "Determine light bulb events supported",
