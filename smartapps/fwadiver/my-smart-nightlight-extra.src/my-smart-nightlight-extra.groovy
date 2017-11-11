@@ -6,8 +6,8 @@
  */
 definition(
     name: "My Smart Nightlight Extra",
-    namespace: "fwadiver",
-    author: "fwadiver",
+    namespace: “fwadiver”,
+    author: “fwadiver”,
     description: "Turns on lights when it's dark and motion is detected.  Turns lights off when it becomes light or some time after motion ceases.  Stay on or change off time when the switch is turned on.",
     category: "Convenience",
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Meta/light_motion-outlet-luminance.png",
@@ -16,13 +16,13 @@ definition(
 
 preferences {
 	section("Control these lights..."){
-		input "lights", "capability.switch", multiple: true
+		input "lights", "capability.switch", multiple: false
 	}
 	section("Turning on when it's dark and there's movement..."){
 		input "motionSensor", "capability.motionSensor", title: "Where?", required: false
 	}
     section("Or, turn on when one of these contacts opened"){
-		input "contacts", "capability.contactSensor", multiple: true, title: "Select Contacts", required: false
+		input "contacts", "capability.contactSensor", multiple: false, title: "Select Contacts", required: false
 	}
 	section("And then off when it's light or there's been no movement for or the contact is closed for..."){
 		input "delayMinutes", "number", title: "Minutes?"
@@ -62,15 +62,22 @@ def updated() {
 }
 
 def initialize() {
-	subscribe(motionSensor, "motion", motionHandler)
-    subscribe(contacts, "contact", contactHandler)
+    if (motionSensor) {
+    	subscribe(motionSensor, "motion", motionHandler)
+        state.trigger = 1
+    }
+    if (contacts) {
+    	subscribe(contacts, "contact", contactHandler)
+        state.trigger = 2
+    }
 	if (lightSensor) {
 		subscribe(lightSensor, "illuminance", illuminanceHandler, [filterEvents: false])
+		state.illuminance = lightSensor.currentIlluminance
 	}
     state.ontime = 0
-	astroCheck()
+    astroCheck()
     runIn(5, astroCheck, [overwrite: false])
-	schedule("0 1 * * * ?", astroCheck) 									// check every hour since location can change without event
+    schedule("0 1 * * * ?", astroCheck) 									// check every hour since location can change without event
     subscribe(lights, "switch.on", delayChange, [filterEvents: false])
     subscribe(lights, "switch.off", turnedOff)
     state.pushed = ""
@@ -83,6 +90,9 @@ def initialize() {
 def turnedOff(evt) {
 	DEBUG("turnedOff: $evt.name: $evt.value SwitchOnStatus: $state.pushed")
 	state.myState = "Light Turned Off"
+    if (state.trigger > 1) {
+    	state.trigger = 2
+    }
 	if (state.pushed == "pushed") {
 		state.pushed = "delay"
 		lights.indicatorWhenOff()
@@ -118,6 +128,9 @@ def contactHandler(evt) {
             DEBUG("Turning on lights by contact opening")
             lights.on()
             state.lastStatus = "on"
+            if (state.trigger == 2) {
+            	state.trigger = 3
+            }
         }
         state.motionStopTime = null
         state.myState = "Leave Light On"
@@ -137,12 +150,16 @@ def contactHandler(evt) {
 				unschedule(turnOffMotionAfterDelay)
 			}
         } else {																			// The on button was NOT pushed so...
-        	if(delayMinutes) {																	// If the user set a delay then...
-				scheduleLightOut(delayMinutes*60)												// Schedule the "lights off" for later.
-			} else {																			// Otherwise...
-				scheduleLightOut(0)																// Run the lights off now.
-			}
-			state.myState = "Schedule Light Out"
+        	if (daytime()) {																	// If daylight 
+            	if(delayMinutes) {																	// If the user set a delay then...
+					scheduleLightOut(delayMinutes*60)												// Schedule the "lights off" for later.
+				} else {																			// Otherwise...
+					scheduleLightOut(0)																// Run the lights off now.
+				}
+				state.myState = "Schedule Light Out"
+            } else {
+            	state.myState = "Leave Light On"
+            }
         }
     }
     TRACE("$evt.name: $evt.value - $state.myState")
@@ -150,14 +167,21 @@ def contactHandler(evt) {
 }
 
 def motionHandler(evt) {
-	DEBUG("motionHandler: $evt.name: $evt.value LightIs: $state.lastStatus")
+	def lightsw = lights.currentSwitch
+	DEBUG("motionHandler: $evt.name: $evt.value Light Is: $state.lastStatus : $lightsw")
 	if (evt.value == "active") {
-		state.myState = "Leave Light Off"
+		if (lightsw == "off") {
+        	state.myState = "Leave Light Off"
+        }
 		if (enabled()) {
-			DEBUG("motionHandler: turning on lights due to motion")
-			lights.on()
+        	if (lightsw == "off") {
+            	state.myState = "Turning on lights due to motion"
+				lights.on()
+            }
+            else {
+            	state.myState = "Leave Light On"
+            }
 			state.lastStatus = "on"
-			state.myState = "Leave Light On"
 		}
 		state.motionStopTime = null
 	}
@@ -166,18 +190,26 @@ def motionHandler(evt) {
 		if (state.pushed == "pushed") {														// The on button was pushed so...
         	if(bigDelayMinutes) {																// If the user set long delay then...
 				scheduleLightOut(bigDelayMinutes*60)											// Schedule the "lights off" for later.
-				state.MyState = "Schedule Light Off"
+				state.myState = "Schedule Light Off"
 			} else {																			// Otherwise...
 				state.myState = "Unschedule turnOffMotionAfterDelay"							// Make sure lights don't go out.
 				unschedule(turnOffMotionAfterDelay)
 			}
-        } else {																			// The on button was NOT pushed so...
-        	if(delayMinutes) {																	// If the user set a delay then...
-				scheduleLightOut(delayMinutes*60)												// Schedule the "lights off" for later.
-			} else {																			// Otherwise...
-				scheduleLightOut(0)																// Run the lights off now.
-			}
-			state.MyState = "Schedule Light Off"
+        } else {																				// The on button was NOT pushed so...
+        	if (lightsw == "on") {
+            	if (enabled()) {
+            		if (delayMinutes) {															// If the user set a delay then...
+						scheduleLightOut(delayMinutes*60)										// Schedule the "lights off" for later.
+					} else {																	// Otherwise...
+						scheduleLightOut(0)														// Run the lights off now.
+					}
+                    state.myState = "Schedule Light Off"
+            	} else {
+            		lights.off()
+                	state.lastStatus = 'off'
+                	state.myState = "Lights turned off due to luminance"
+                }
+            }
         }
 	}
 	DEBUG("motionHandler: Light Action - $state.myState")
@@ -185,14 +217,15 @@ def motionHandler(evt) {
 }
 
 def illuminanceHandler(evt) {
-	DEBUG("illuminanceHandler: $evt.name: $evt.value, lastStatus: $state.lastStatus, motionStopTime: $state.motionStopTime myState: $state.myState")
-	def lastStatus = state.lastStatus
-	if (lastStatus != "off" && evt.integerValue > darkvalue && state.pushed != "pushed") {
+	def lightsw = lights.currentSwitch
+	DEBUG("illuminanceHandler-start: $evt.name: $evt.value, light is: $lightsw, motionStopTime: $state.motionStopTime myState: $state.myState")
+	state.illuminance = evt.integerValue
+	if (lightsw != "on" && evt.integerValue > darkvalue && state.pushed != "pushed") {
 		lights.off()
 		state.lastStatus = "off"
 	}
 	else if (state.motionStopTime) {
-		if (lastStatus != "off") {
+		if (lightsw != "off") {
 			def elapsed = now() - state.motionStopTime
 			if (elapsed >= (delayMinutes ?: 0) * 60000L) {
 				lights.off()
@@ -200,15 +233,17 @@ def illuminanceHandler(evt) {
 			}
 		}
 	}
-	else if (lastStatus != "on" && evt.integerValue < darkvalue && state.offpushed == null){
+	else if (lightsw != "on" && evt.integerValue < darkvalue && state.offpushed == null && state.trigger != 2){
 		lights.on()
 		state.lastStatus = "on"
 	}
+    DEBUG("illuminanceHandler-end: $evt.name: $evt.value, light is: $state.lastStatus, motionStopTime: $state.motionStopTime myState: $state.myState")
 }
 
 def turnOffMotionAfterDelay() {
-	DEBUG("turnOffMotionAfterDelay - Last Light Status: $state.lastStatus, SwitchONStatus: $state.pushed StopTime: $state.motionStopTime")
-	if (state.motionStopTime && state.lastStatus != "off" && state.pushed != "pushed") {
+	def lightsw = lights.currentSwitch
+	DEBUG("turnOffMotionAfterDelay-start: Light Status: $lightsw, SwitchONStatus: $state.pushed StopTime: $state.motionStopTime")
+	if (state.motionStopTime && lightsw != "off" && state.pushed != "pushed") {
 		def elapsed = now() - state.motionStopTime
 		def delayvalue = (delayMinutes ?: 0) * 60000L
 		if (elapsed >= delayvalue) {
@@ -218,8 +253,11 @@ def turnOffMotionAfterDelay() {
 		else {
 			scheduleLightOut(60)
 		}
-		DEBUG("turnOffMotionAfterDealy - Last Light Status: $state.lastStatus, Elapsed Time: $elapsed, DelayValue: $delayvalue")
+		DEBUG("turnOffMotionAfterDelay-end: Light Status: $state.lastStatus, Elapsed Time: $elapsed, DelayValue: $delayvalue")
 	}
+    else {
+    	DEBUG("turnOffMotionAfterDelay-end: Light Status: $lightsw, SwitchONStatus: $state.pushed")
+    }
 }
 
 def scheduleCheck() {
@@ -238,10 +276,19 @@ def astroCheck() {
 
 def delayChange(evt) {
 	DEBUG("delayChange lastStatus: $state.lastStatus")
+    DEBUG("event from digital actuation? ${evt.isDigital()}")
+    DEBUG("event from physical actuation? ${evt.isPhysical()}")
+    DEBUG("Is this event a state change? ${evt.isStateChange()}")
+    DEBUG("The source of this event is: ${evt.source}")
+    DEBUG("The value of this event as a string: ${evt.value}")
+    DEBUG("the name of this event: ${evt.name}")
+    DEBUG("event id: ${evt.id}")
+    DEBUG("event raw description: ${evt.description}")
+    DEBUG("event description text: ${evt.descriptionText}")
 	state.offpushed = null
- 	if (evt.isPhysical()) {
+ 	if (evt.isPhysical() && evt.isStateChange()) {
     	state.pushed = "pushed"
-	} else if(delayMinutes) {
+	} else if((delayMinutes) && state.trigger != 3) {
 		scheduleLightOut(delayMinutes*60)
 	}
 	if (state.pushed == "pushed") {
@@ -276,8 +323,13 @@ private enabled() {
     	state.ontime = 0
         state.offpushed = null
         if (lightSensor) {
-			result = lightSensor.currentIlluminance < darkvalue
-        	DEBUG("Light Level: $lightSensor.currentIlluminance  DarknessValue: $darkvalue")
+        	if (state.illuminance == null) {
+        		result = 0
+        	}
+        	else {
+				result = lightSensor.currentIlluminance < darkvalue
+        		DEBUG("Light Level: $state.illuminance : $lightSensor.currentIlluminance DarknessValue: $darkvalue")
+        	}
 		}
 		else {
 			result = t < state.riseTime || t > state.setTime
